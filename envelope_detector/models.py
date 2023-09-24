@@ -14,7 +14,7 @@ class EnvelopeDetector(nn.Module):
     """
     An interpretable envelope detector for decoding and interpreting cortical signals.
 
-    The class represents a PyTorch model that applies various filters, 
+    The class represents a PyTorch model that applies various filters,
     activation methods, and downsampling techniques to input data.
 
     Parameters:
@@ -60,6 +60,7 @@ class EnvelopeDetector(nn.Module):
         self,
         nchannels,
         nfeatures,
+        spatial_bias=True,
         temporal_filter_size=7,
         downsample_coef=1,
         dropout=0,
@@ -79,7 +80,9 @@ class EnvelopeDetector(nn.Module):
         self.downsample_coef = downsample_coef
 
         # Spatial filtering
-        self.spatial_filter = nn.Conv1d(nchannels, nfeatures, kernel_size=1, bias=False)
+        self.spatial_filter = nn.Conv1d(
+            nchannels, nfeatures, kernel_size=1, bias=spatial_bias
+        )
         self.spatial_filter_batchnorm = nn.BatchNorm1d(nfeatures, affine=False)
 
         # Temporal filtering
@@ -161,195 +164,3 @@ class EnvelopeDetector(nn.Module):
             x = self.downsampler(x)
 
         return x
-
-    def _covariance(self, x, unbiased=True, mean=None):
-        """
-        Compute the covariance matrix of a signal.
-        """
-        if mean is None:
-            mean = torch.mean(x, dim=-1, keepdims=True)
-        x = x - mean
-        covariance_matrix = (
-            1 / (x.shape[-1] - unbiased) * torch.einsum("...ct, ...Ct -> ...cC", x, x)
-        )
-        return covariance_matrix
-
-    def spatial_patterns(self, x, nbatch=100):
-        """
-        Compute spatial patterns for a given dataset.
-        """
-        if (len(x.shape) == 2) or (len(x.shape) == 3 and x.shape[0] == 1):
-            batched = False
-            if type(x) is not torch.Tensor:
-                x = torch.tensor(x, dtype=torch.float32)
-            x = x.to(self.spatial_filter.weight.device)
-        elif (len(x.shape) == 3) and (x.shape[0] != 1):
-            batched = True
-            dataset = SimpleDataset(x)
-            dataloader = DataLoader(dataset, batch_size=nbatch, shuffle=False)
-        else:
-            raise ValueError(
-                f"Input with shape {x.shape} is not supported, len(input.shape) has to be in (2, 3)."
-            )
-
-        spatial_patterns = torch.zeros(
-            (self.nfeatures, self.nchannels),
-            dtype=torch.float32,
-            device=self.spatial_filter.weight.device,
-        )
-        for projection in range(self.nfeatures):
-            temporal_filter = self.temporal_filter.weight.data[
-                projection : projection + 1
-            ]
-            spatial_filter = self.spatial_filter.weight.data[projection]
-            temporal_filter_ = einops.repeat(
-                temporal_filter, "1 1 t -> c 1 t", c=self.nchannels
-            )
-
-            if not batched:
-                x_filtered = F.conv1d(
-                    x,
-                    temporal_filter_,
-                    bias=None,
-                    padding="same",
-                    groups=self.nchannels,
-                )
-                x_cov = self._covariance(x_filtered, unbiased=True)
-            else:
-                x_mean = 0
-                for batch in dataloader:
-                    batch = batch.to(self.temporal_filter.weight.device)
-                    batch_size = batch.shape[0]
-                    batch = einops.rearrange(batch, "b c t -> c (b t)")
-                    batch_filtered = F.conv1d(
-                        batch,
-                        temporal_filter_,
-                        bias=None,
-                        padding="same",
-                        groups=self.nchannels,
-                    )
-                    batch_filtered = einops.rearrange(
-                        batch_filtered, "c (b t) -> b c t", b=batch_size
-                    )
-                    x_mean += (
-                        torch.sum(batch_filtered, dim=(0, -1), keepdims=True)
-                        / batch.shape[-1]
-                    )
-                x_mean /= len(dataset)
-
-                x_cov = 0
-                for batch in dataloader:
-                    batch = batch.to(self.temporal_filter.weight.device)
-                    batch_size = batch.shape[0]
-                    batch = einops.rearrange(batch, "b c t -> c (b t)")
-                    batch_filtered = F.conv1d(
-                        batch,
-                        temporal_filter_,
-                        bias=None,
-                        padding="same",
-                        groups=self.nchannels,
-                    )
-                    batch_filtered = einops.rearrange(
-                        batch_filtered, "c (b t) -> b c t", b=batch_size
-                    )
-                    x_cov_batch = self._covariance(
-                        batch_filtered, unbiased=False, mean=x_mean
-                    )
-                    x_cov += torch.sum(x_cov_batch, dim=0) * batch.shape[-1]
-                x_cov /= batch.shape[-1] * len(dataset) - 1
-
-            pattern = torch.einsum("...cC, Ck -> c", x_cov, spatial_filter)
-            spatial_patterns[projection] = pattern
-
-        results = {
-            "spatial_filters": einops.rearrange(
-                self.spatial_filter.weight.data, "o i 1 -> o i"
-            ),
-            "spatial_patterns": spatial_patterns,
-        }
-        return results
-
-    def _spectrum(self, signal, fs, nfreq):
-        """
-        Calculate the amplitude spectrum of a signal using FFT.
-        """
-        amplitudes = torch.abs(torch.fft.fft(signal, nfreq, dim=-1))
-        frequencies = torch.fft.fftfreq(nfreq, d=1 / fs)
-        positive_freq = nfreq // 2
-        return frequencies[:positive_freq], amplitudes[..., :positive_freq]
-
-    def temporal_patterns(self, x, fs=1000, nyquist=500, nbatch=100):
-        """
-        Derive temporal patterns of a given dataset.
-        """
-        if (len(x.shape) == 2) or (len(x.shape) == 3 and x.shape[0] == 1):
-            batched = False
-            if type(x) is not torch.Tensor:
-                x = torch.tensor(x, dtype=torch.float32)
-            x = x.to(self.spatial_filter.weight.device)
-        elif (len(x.shape) == 3) and (x.shape[0] != 1):
-            batched = True
-            dataset = SimpleDataset(x)
-            dataloader = DataLoader(dataset, batch_size=nbatch, shuffle=False)
-        else:
-            raise ValueError(
-                f"Input with shape {x.shape} is not supported, len(input.shape) has to be in (2, 3)."
-            )
-
-        if not batched:
-            if len(x.shape) != 2:
-                x = einops.rearrange(x, "1 c t -> c t")
-            x_unmixed = self.spatial_filter(x)
-
-            x_unmixed_numpy = x_unmixed.cpu().detach().numpy()
-            frequencies_input, spectrum_input = sg.welch(
-                x_unmixed_numpy, fs=fs, nperseg=nyquist, detrend="constant", axis=-1
-            )
-            spectrum_input = torch.tensor(
-                spectrum_input[..., :-1], dtype=x_unmixed.dtype, device=x_unmixed.device
-            )
-        else:
-            spectrum_input = 0
-            for batch in dataloader:
-                batch = batch.to(self.temporal_filter.weight.device)
-                batch_unmixed = self.spatial_filter(batch)
-                batch_size = batch.shape[0]
-                batch_unmixed = einops.rearrange(batch_unmixed, "b c t -> c (b t)")
-                batch_unmixed_numpy = batch_unmixed.cpu().detach().numpy()
-                frequencies_input, spectrum_input_ = sg.welch(
-                    batch_unmixed_numpy,
-                    fs=fs,
-                    nperseg=nyquist,
-                    detrend="constant",
-                    axis=-1,
-                )
-                spectrum_input_ = torch.tensor(
-                    spectrum_input_[..., :-1],
-                    dtype=batch_unmixed.dtype,
-                    device=batch_unmixed.device,
-                )
-                spectrum_input += spectrum_input_ * batch_size
-            spectrum_input /= len(dataset)
-
-        temporal_filter = self.temporal_filter.weight.data
-        frequencies_input = torch.tensor(
-            frequencies_input[:-1],
-            dtype=temporal_filter.dtype,
-            device=temporal_filter.device,
-        )
-        frequencies_filter, temporal_filter_amplitudes = self._spectrum(
-            temporal_filter, fs, nfreq=nyquist
-        )
-        temporal_filter_amplitudes = einops.rearrange(
-            temporal_filter_amplitudes, "c 1 t -> c t"
-        )
-
-        results = {
-            "frequencies": frequencies_input,
-            "input_spectrum": spectrum_input,
-            "temporal_filters_spectrum": temporal_filter_amplitudes,
-            "temporal_patterns_spectrum": temporal_filter_amplitudes * spectrum_input,
-            "output_spectrum": torch.pow(temporal_filter_amplitudes, 2)
-            * spectrum_input,
-        }
-        return results
