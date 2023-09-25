@@ -62,6 +62,7 @@ class EnvelopeDetector(nn.Module):
         nfeatures,
         spatial_bias=True,
         temporal_filter_size=7,
+        temporal_filter_dilation=1,
         downsample_coef=1,
         dropout=0,
         activation="demodulation",
@@ -76,6 +77,7 @@ class EnvelopeDetector(nn.Module):
         self.nchannels = nchannels
         self.nfeatures = nfeatures
         self.temporal_filter_size = temporal_filter_size
+        self.temporal_filter_dilation = temporal_filter_dilation
         self.fs_in = fs_in
         self.downsample_coef = downsample_coef
 
@@ -93,6 +95,7 @@ class EnvelopeDetector(nn.Module):
             bias=False,
             groups=nfeatures,
             padding="same",
+            dilation=temporal_filter_dilation,
         )
         self.temporal_filter_batchnorm = nn.BatchNorm1d(nfeatures, affine=False)
 
@@ -143,8 +146,14 @@ class EnvelopeDetector(nn.Module):
         return einops.rearrange(self.spatial_filter.weight, 'o i 1 -> o i').clone().detach()
             
     def get_temporal_filter(self):
-        return einops.rearrange(self.temporal_filter.weight, 'o 1 t -> o t').clone().detach()
-            
+        temporal_filter = einops.rearrange(self.temporal_filter.weight, 'o 1 t -> o t').clone().detach()
+    
+        dilated_filter_size = 1 + (temporal_filter.shape[1] - 1) * self.temporal_filter_dilation
+        dilated_filter = torch.zeros(temporal_filter.shape[0], dilated_filter_size)
+        for i in range(temporal_filter.shape[1]):
+            dilated_filter[:, i * self.temporal_filter_dilation] = temporal_filter[:, i]
+        return dilated_filter
+
             
     def forward(self, x):
         # If input is 2D, add a singleton batch dimension
