@@ -35,7 +35,7 @@ class EnvelopeDetector(nn.Module):
         Dropout rate after the temporal convolution layer.
         It's useful when the `temporal_filter_size` is large.
 
-    activation_method : str, optional (default='demodulation')
+    activation : str, optional (default='demodulation')
         Specifies the activation method. Options include 'demodulation' which uses the absolute value,
         and 'hilbert' which employs the absolute value of the Hilbert transform.
 
@@ -64,7 +64,7 @@ class EnvelopeDetector(nn.Module):
         temporal_filter_size=7,
         downsample_coef=1,
         dropout=0,
-        activation_method="demodulation",
+        activation="demodulation",
         downsample_method="avepool",
         fs_in=1000,
         use_temporal_smoother=False,
@@ -99,15 +99,17 @@ class EnvelopeDetector(nn.Module):
         # Dropout layer
         self.dropout_layer = nn.Dropout(p=dropout) if dropout else None
 
-        # Activation
-        if activation_method == "demodulation":
-            self.activation = nn.LeakyReLU(-1)
-        elif activation_method == "hilbert":
-            self.activation = nn.Sequential(
-                # Assuming HilbertLayer is defined elsewhere in your code
-                HilbertLayer(),
-                nn.LeakyReLU(-1),
-            )
+        # Activation function
+        if callable(activation) and isinstance(activation(), torch.nn.Module):
+            self.activation = activation()
+        elif isinstance(activation, str):
+            if activation == "demodulation":
+                self.activation = nn.LeakyReLU(-1)
+            elif activation == "hilbert":
+                self.activation = nn.Sequential(
+                    HilbertLayer(),
+                    nn.LeakyReLU(-1),
+                )
 
         # Temporal smoother
         self.temporal_smoother = (
@@ -137,6 +139,13 @@ class EnvelopeDetector(nn.Module):
         else:
             self.downsampler = None
 
+    def get_spatial_filter(self):
+        return einops.rearrange(self.spatial_filter.weight, 'o i 1 -> o i').clone().detach()
+            
+    def get_temporal_filter(self):
+        return einops.rearrange(self.temporal_filter.weight, 'o 1 t -> o t').clone().detach()
+            
+            
     def forward(self, x):
         # If input is 2D, add a singleton batch dimension
         if len(x.shape) == 2:
