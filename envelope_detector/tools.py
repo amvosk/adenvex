@@ -1,7 +1,7 @@
 import torch
 from torch.autograd import grad
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 
 import einops
 import scipy.signal as sg
@@ -58,13 +58,20 @@ def create_importance_indices(
     gradients : torch.Tensor
         The aggregated gradients for all elements in `z`.
     """
-    gradients = 0
-    dataset = SimpleDataset(data)
+    if isinstance(data, Dataset):
+        dataset = data
+    elif (len(data.shape) == 3) and (data.shape[0] != 1):
+        dataset = SimpleDataset(data)
+        
     dataloader = DataLoader(dataset, batch_size=nbatch, shuffle=False)
+    gradients = 0
     model = model.to(device)
 
     for batch in dataloader:
-        batch = batch.to(device)
+        if isinstance(batch, tuple) or isinstance(batch, list):
+            batch = (x.to(device) for x in batch)
+        else:
+            batch = batch.to(device)
         z, y = model(batch)
         # jacobian-vector product used to determine feature importance
         gradients_ = grad(
@@ -116,7 +123,11 @@ def create_spatial_patterns(
             - 'spatial_filters': The spatial filters used.
             - 'spatial_patterns': The derived spatial patterns.
     """
-    if (len(x.shape) == 2) or (len(x.shape) == 3 and x.shape[0] == 1):
+    
+    if isinstance(x, Dataset):
+        batched = True
+        dataloader = DataLoader(dataset, batch_size=nbatch, shuffle=False)
+    elif (len(x.shape) == 2) or (len(x.shape) == 3 and x.shape[0] == 1):
         batched = False
         if type(x) is not torch.Tensor:
             x = torch.tensor(x, dtype=dtype)

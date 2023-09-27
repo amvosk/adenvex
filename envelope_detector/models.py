@@ -61,8 +61,10 @@ class EnvelopeDetector(nn.Module):
         nchannels,
         nfeatures,
         spatial_bias=True,
+        temporal_filter_enable=True,
         temporal_filter_size=7,
         temporal_filter_dilation=1,
+        
         downsample_coef=1,
         dropout=0,
         activation="demodulation",
@@ -88,17 +90,21 @@ class EnvelopeDetector(nn.Module):
         self.spatial_filter_batchnorm = nn.BatchNorm1d(nfeatures, affine=False)
 
         # Temporal filtering
-        self.temporal_filter = nn.Conv1d(
-            nfeatures,
-            nfeatures,
-            kernel_size=temporal_filter_size,
-            bias=False,
-            groups=nfeatures,
-            padding="same",
-            dilation=temporal_filter_dilation,
-        )
-        self.temporal_filter_batchnorm = nn.BatchNorm1d(nfeatures, affine=False)
-
+        if temporal_filter_enable:
+            self.temporal_filter = nn.Conv1d(
+                nfeatures,
+                nfeatures,
+                kernel_size=temporal_filter_size,
+                bias=False,
+                groups=nfeatures,
+                padding="same",
+                dilation=temporal_filter_dilation,
+            )
+            self.temporal_filter_batchnorm = nn.BatchNorm1d(nfeatures, affine=False)
+        else:
+            self.temporal_filter = None
+            self.temporal_filter_batchnorm = None
+        
         # Dropout layer
         self.dropout_layer = nn.Dropout(p=dropout) if dropout else None
 
@@ -146,13 +152,23 @@ class EnvelopeDetector(nn.Module):
         return einops.rearrange(self.spatial_filter.weight, 'o i 1 -> o i').clone().detach()
             
     def get_temporal_filter(self):
-        temporal_filter = einops.rearrange(self.temporal_filter.weight, 'o 1 t -> o t').clone().detach()
-    
-        dilated_filter_size = 1 + (temporal_filter.shape[1] - 1) * self.temporal_filter_dilation
-        dilated_filter = torch.zeros(temporal_filter.shape[0], dilated_filter_size)
-        for i in range(temporal_filter.shape[1]):
-            dilated_filter[:, i * self.temporal_filter_dilation] = temporal_filter[:, i]
-        return dilated_filter
+        if self.temporal_filter:
+            temporal_filter = einops.rearrange(self.temporal_filter.weight, 'o 1 t -> o t')
+            dilated_filter_size = 1 + (temporal_filter.shape[1] - 1) * self.temporal_filter_dilation
+            dilated_filter = torch.zeros(
+                (temporal_filter.shape[0], dilated_filter_size),
+                dtype=self.temporal_filter.weight.dtype,
+                device=self.temporal_filter.weight.device,
+            )
+            for i in range(temporal_filter.shape[1]):
+                dilated_filter[:, i * self.temporal_filter_dilation] = temporal_filter[:, i]
+        else:
+            dilated_filter = torch.ones(
+                size=(self.nfeatures, 1), 
+                dtype=self.spatial_filter.weight.dtype,
+                device=self.spatial_filter.weight.device,
+            )
+        return dilated_filter.clone().detach()
 
             
     def forward(self, x):
@@ -165,10 +181,9 @@ class EnvelopeDetector(nn.Module):
         x = self.spatial_filter_batchnorm(x)
 
         # Temporal filtering
-        x = self.temporal_filter(x)
-        if self.dropout_layer:
-            x = self.dropout_layer(x)
-        x = self.temporal_filter_batchnorm(x)
+        x = self.temporal_filter(x) if self.temporal_filter else x
+        x = self.dropout_layer(x) if self.dropout_layer else x
+        x = self.temporal_filter_batchnorm(x) if self.temporal_filter_batchnorm else x
 
         # Activation
         x = self.activation(x)
