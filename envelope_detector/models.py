@@ -8,6 +8,7 @@ import einops
 import scipy.signal as sg
 
 from .utils import SimpleDataset
+from .layers import HilbertAmplitudeLayer, HilbertSplitLayer
 
 
 class EnvelopeDetector(nn.Module):
@@ -114,11 +115,14 @@ class EnvelopeDetector(nn.Module):
         elif isinstance(activation, str):
             if activation == "demodulation":
                 self.activation = nn.LeakyReLU(-1)
-            elif activation == "hilbert":
-                self.activation = nn.Sequential(
-                    HilbertLayer(),
-                    nn.LeakyReLU(-1),
-                )
+            elif activation == "hilbert_amplitude":
+                self.activation = HilbertAmplitudeLayer()
+            elif activation == "hilbert_split":
+                self.activation = HilbertSplitLayer()
+            else:
+                self.activation = None
+        else:
+            self.activation = None
 
         # Temporal smoother
         self.temporal_smoother = (
@@ -177,8 +181,8 @@ class EnvelopeDetector(nn.Module):
             x = einops.rearrange(x, "C L -> 1 C L")
 
         # Spatial filtering
-        x = self.spatial_filter(x)
-        x = self.spatial_filter_batchnorm(x)
+        x = self.spatial_filter(x) if self.spatial_filter else x
+        x = self.spatial_filter_batchnorm(x) if self.spatial_filter_batchnorm else x
 
         # Temporal filtering
         x = self.temporal_filter(x) if self.temporal_filter else x
@@ -186,14 +190,12 @@ class EnvelopeDetector(nn.Module):
         x = self.temporal_filter_batchnorm(x) if self.temporal_filter_batchnorm else x
 
         # Activation
-        x = self.activation(x)
+        x = self.activation(x) if self.activation else x
 
         # Temporal smoothing
-        if self.temporal_smoother:
-            x = self.temporal_smoother(x)
+        x = self.temporal_smoother(x) if self.temporal_smoother else x
 
         # Downsampling
-        if self.downsampler:
-            x = self.downsampler(x)
+        x = self.downsampler(x) if self.downsampler else x
 
         return x

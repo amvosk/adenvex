@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+import einops
 
 class HilbertLayer(nn.Module):
     """
@@ -51,3 +51,25 @@ class HilbertLayer(nn.Module):
 
         x_hilbert = torch.fft.ifft(xf * h, dim=-1)
         return x_hilbert
+
+
+class HilbertAmplitudeLayer(nn.Module):
+    def __init__(self):
+        super(self.__class__, self).__init__()
+        self.hilbert = HilbertLayer()
+
+    def forward(self, x):
+        x = self.hilbert(x)
+        x = torch.abs(x)
+        return x
+    
+class HilbertSplitLayer(nn.Module):
+    def __init__(self):
+        super(self.__class__, self).__init__()
+        self.hilbert = HilbertLayer()
+
+    def forward(self, x):
+        x_complex = self.hilbert(x)
+        x_real = torch.view_as_real(x_complex)
+        x = einops.rearrange(x_real, 'b c t a -> b (c a) t')
+        return x
