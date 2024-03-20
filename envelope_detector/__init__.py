@@ -6,3 +6,5 @@ from .tools import (
 )
 from .models import EnvelopeDetector
 from .layers import HilbertAmplitudeLayer, HilbertLayer
+
+from .temporal_filters import ComplexWaveletLayer, FilterHilbertLayer 
