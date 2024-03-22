@@ -5,6 +5,6 @@ from .tools import (
     create_temporal_patterns,
 )
 from .models import EnvelopeDetector
-from .layers import HilbertAmplitudeLayer, HilbertLayer
+from .layers import HilbertLayer
 
 from .temporal_filters import ComplexWaveletLayer, FilterHilbertLayer 
