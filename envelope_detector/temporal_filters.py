@@ -35,7 +35,7 @@ class Filter1D(nn.Module):
             self.coef_bandwidth = nn.Parameter(coef_bandwidth)
         else:
             if not isinstance(bandwidth, torch.Tensor):
-                bandwidth = torch.tensor(bandwidth, dtype=torch.float32)
+                bandwidth = torch.tensor(bandwidth, dtype=torch.float32).reshape((1,))
             assert bandwidth.shape[0] in (1, self.n_channels)
             if bandwidth.shape[0] != self.n_channels:
                 bandwidth = bandwidth.repeat(self.n_channels)
