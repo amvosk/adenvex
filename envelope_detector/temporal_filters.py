@@ -72,7 +72,42 @@ class Filter1D(nn.Module):
         return freq, bandwidth, freq_low, freq_high
     
     
-class FilterHilbertLayer(Filter1D):
+class SincLayer(Filter1D):
+    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, padding_mode, seed)
+        
+        self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,-1)))
+        self.hilbert = HilbertLayer()
+
+    def _create_filters(self, freq_low, freq_high):
+        freq_low, freq_high = freq_low.reshape((-1,1,1)), freq_high.reshape((-1,1,1))   
+        filt_low = freq_low * torch.special.sinc(2 * freq_low * self._scale)
+        filt_high = freq_high * torch.special.sinc(2 * freq_high * self._scale)
+        filt = self._hamming_window * 2 * (filt_high - filt_low) / self.srate
+        return filt
+        
+    def forward(self, x):
+        ndim = x.ndim
+        if ndim == 1:
+            x = x.unsqueeze(0).unsqueeze(0)
+        elif ndim == 2:
+            x = x.unsqueeze(0)
+            
+        x = self.pad(x)
+        _, _, freq_low, freq_high = self._create_frequencies()
+        filt = self._create_filters(freq_low, freq_high)
+        x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+        
+        if ndim == 1:
+            x = x.squeeze(0).squeeze(0)
+        elif ndim == 2:
+            x = x.squeeze(0)
+            
+        x = x[...,self.padding:-self.padding]
+        return x
+    
+    
+class SincHilbertLayer(Filter1D):
     def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
         super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, padding_mode, seed)
         
@@ -112,6 +147,40 @@ class FilterHilbertLayer(Filter1D):
             x = torch.abs(x)
             return x
 
+
+class WaveletLayer(Filter1D):
+    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, padding_mode, seed)
+           
+    def _create_filters(self, freq, bandwidth):
+        freq, bandwidth = freq.reshape((-1,1,1)), bandwidth.reshape((-1,1,1))
+        sigma2 = (2 * math.log(2)) / (bandwidth * math.pi)**2
+        filt = (2 * math.pi * sigma2)**(-1/2) / (self.srate / 2)
+        filt = filt * torch.cos(2*math.pi * freq * self._scale)
+        filt = filt * torch.exp(- self._scale**2 / (2 * sigma2))
+        return filt
+                            
+    def forward(self, x):
+        ndim = x.ndim
+        if ndim == 1:
+            x = x.unsqueeze(0).unsqueeze(0)
+        elif ndim == 2:
+            x = x.unsqueeze(0)
+            
+        x = self.pad(x)
+        freq, bandwidth, _, _ = self._create_frequencies()
+        filt = self._create_filters(freq, bandwidth)
+        x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+                            
+        x = x[...,self.padding:-self.padding]
+            
+        if ndim == 1:
+            x = x.squeeze(0).squeeze(0)
+        elif ndim == 2:
+            x = x.squeeze(0)
+        return x
+
+        
         
 class ComplexWaveletLayer(Filter1D):
     def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
@@ -124,8 +193,7 @@ class ComplexWaveletLayer(Filter1D):
         filt = filt * (torch.exp(1j*2*math.pi * freq * self._scale) - torch.exp(-0.5*(2*math.pi * freq)**2))
         filt = filt * torch.exp(- self._scale**2 / (2 * sigma2))
         return filt
-
-                            
+          
     def forward(self, x, return_filtered=False):
         ndim = x.ndim
         if ndim == 1:
