@@ -8,30 +8,39 @@ from .layers import HilbertLayer
 
 
 class Filter1D(nn.Module):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None, hilbert=False):
         super().__init__()
         self.n_channels = n_channels
         self.kernel_size = kernel_size
         self.srate = srate
         
-        self.padding = kernel_size // 2
+        padding = kernel_size // 2
+        if hilbert:
+            self.padding_hilbert = kernel_size // 2
+            padding += self.padding_hilbert
+            
         if padding_mode == 'zeros':
-            self.pad = nn.ConstantPad1d(2*self.padding, 0)
+            self.pad = nn.ConstantPad1d(padding, 0)
         elif padding_mode == 'reflect':
-            self.pad = nn.ReflectionPad1d(2*self.padding)
+            self.pad = nn.ReflectionPad1d(padding)
         
         self.register_buffer('_scale', torch.arange(-self.kernel_size//2 + 1, self.kernel_size//2 + 1).reshape((1,1,-1)) / self.srate)
 
+        if seed is None:
+            seed = int(torch.empty((), dtype=torch.int64).random_().item())
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        
         self.freq = freq
         if self.freq is None:
-            coef_freq = self._create_parameters_freq(self.n_channels, fmin_init, fmax_init, seed=seed)
+            coef_freq = self._create_parameters_freq(self.n_channels, fmin_init, fmax_init)
             self.coef_freq = nn.Parameter(coef_freq)
         else:
             self.register_buffer('_freq', freq)
         
         self.bandwidth = bandwidth
         if self.bandwidth is None:
-            coef_bandwidth = self._create_parameters_bandwidth(self.n_channels, seed=seed)
+            coef_bandwidth = self._create_parameters_bandwidth(self.n_channels)
             self.coef_bandwidth = nn.Parameter(coef_bandwidth)
         else:
             if not isinstance(bandwidth, torch.Tensor):
@@ -41,15 +50,11 @@ class Filter1D(nn.Module):
                 bandwidth = bandwidth.repeat(self.n_channels)
             self.register_buffer('_bandwidth', bandwidth)
         
-    def _create_parameters_freq(self, n_coef, fmin_init, fmax_init, seed=None):
-        if seed is not None:
-            torch.manual_seed(seed)
+    def _create_parameters_freq(self, n_coef, fmin_init, fmax_init):
         coef = fmin_init + torch.rand(size=(n_coef,)) * (fmax_init - fmin_init)
         return coef
     
-    def _create_parameters_bandwidth(self, n_coef, seed=None):
-        if seed is not None:
-            torch.manual_seed(seed)
+    def _create_parameters_bandwidth(self, n_coef):
         coef = torch.rand(size=(n_coef,)) * 0.8 + 0.1
         coef = torch.log(coef / (1-coef))
         return coef
@@ -87,29 +92,16 @@ class SincLayer(Filter1D):
         return filt
         
     def forward(self, x):
-        ndim = x.ndim
-        if ndim == 1:
-            x = x.unsqueeze(0).unsqueeze(0)
-        elif ndim == 2:
-            x = x.unsqueeze(0)
-            
         x = self.pad(x)
         _, _, freq_low, freq_high = self._create_frequencies()
         filt = self._create_filters(freq_low, freq_high)
         x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
-        
-        if ndim == 1:
-            x = x.squeeze(0).squeeze(0)
-        elif ndim == 2:
-            x = x.squeeze(0)
-            
-        x = x[...,self.padding:-self.padding]
         return x
     
     
 class SincHilbertLayer(Filter1D):
     def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, padding_mode, seed)
+        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, padding_mode, seed, hilbert=True)
         
         self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,-1)))
         self.hilbert = HilbertLayer()
@@ -122,30 +114,17 @@ class SincHilbertLayer(Filter1D):
         return filt
         
     def forward(self, x, return_filtered=False):
-        ndim = x.ndim
-        if ndim == 1:
-            x = x.unsqueeze(0).unsqueeze(0)
-        elif ndim == 2:
-            x = x.unsqueeze(0)
-            
         x = self.pad(x)
         _, _, freq_low, freq_high = self._create_frequencies()
         filt = self._create_filters(freq_low, freq_high)
         x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
-        
-        if ndim == 1:
-            x = x.squeeze(0).squeeze(0)
-        elif ndim == 2:
-            x = x.squeeze(0)
             
-        if return_filtered:
-            x = x[...,self.padding:-self.padding]
-            return x
-        else:
+        if not return_filtered:
             x = self.hilbert(x)
-            x = x[...,self.padding:-self.padding]
             x = torch.abs(x)
-            return x
+        x = x[...,self.padding_hilbert:-self.padding_hilbert]
+        return x
+    
 
 
 class WaveletLayer(Filter1D):
@@ -161,23 +140,10 @@ class WaveletLayer(Filter1D):
         return filt
                             
     def forward(self, x):
-        ndim = x.ndim
-        if ndim == 1:
-            x = x.unsqueeze(0).unsqueeze(0)
-        elif ndim == 2:
-            x = x.unsqueeze(0)
-            
         x = self.pad(x)
         freq, bandwidth, _, _ = self._create_frequencies()
         filt = self._create_filters(freq, bandwidth)
         x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
-                            
-        x = x[...,self.padding:-self.padding]
-            
-        if ndim == 1:
-            x = x.squeeze(0).squeeze(0)
-        elif ndim == 2:
-            x = x.squeeze(0)
         return x
 
         
@@ -195,26 +161,14 @@ class ComplexWaveletLayer(Filter1D):
         return filt
           
     def forward(self, x, return_filtered=False):
-        ndim = x.ndim
-        if ndim == 1:
-            x = x.unsqueeze(0).unsqueeze(0)
-        elif ndim == 2:
-            x = x.unsqueeze(0)
-            
         x = self.pad(x)
-        x = x.to(torch.complex64)
         freq, bandwidth, _, _ = self._create_frequencies()
         filt = self._create_filters(freq, bandwidth)
-        x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
-                            
-        x = x[...,self.padding:-self.padding]
-            
-        if ndim == 1:
-            x = x.squeeze(0).squeeze(0)
-        elif ndim == 2:
-            x = x.squeeze(0)
-            
+        
         if return_filtered:
-            return torch.real(x)
+            x = F.conv1d(x, filt.real, groups=x.shape[-2], padding='valid')
         else:
-            return torch.abs(x)
+            x = x.to(torch.complex64)
+            x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+            x = torch.abs(x)
+        return x
