@@ -61,7 +61,7 @@ class Filter1D(nn.Module):
     
     def _create_frequencies(self):
         if self.freq is None:
-            freq = F.softplus(self.coef_freq)
+            freq = 0.2 + F.softplus(self.coef_freq)
         else:
             freq = self._freq
             
@@ -82,7 +82,7 @@ class SincLayer(Filter1D):
         super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, padding_mode, seed)
         
         self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,-1)))
-        self.hilbert = HilbertLayer()
+#         self.hilbert = HilbertLayer()
 
     def _create_filters(self, freq_low, freq_high):
         freq_low, freq_high = freq_low.reshape((-1,1,1)), freq_high.reshape((-1,1,1))   
