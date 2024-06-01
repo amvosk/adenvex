@@ -55,7 +55,7 @@ class Filter1D(nn.Module):
         return coef
     
     def _create_parameters_bandwidth(self, n_coef):
-        coef = torch.rand(size=(n_coef,)) * 0.8 + 0.1
+        coef = torch.rand(size=(n_coef,)) * 0.95 + 0.025
         coef = torch.log(coef / (1-coef))
         return coef
     
@@ -66,7 +66,7 @@ class Filter1D(nn.Module):
             freq = self._freq
             
         if self.bandwidth is None:
-            bandwidth = torch.sigmoid(self.coef_bandwidth) * 0.8 + 0.1
+            bandwidth = torch.sigmoid(self.coef_bandwidth) * 0.95 + 0.025
         else:
             bandwidth = self._bandwidth
         bandwidth = bandwidth * freq
