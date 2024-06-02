@@ -63,6 +63,7 @@ class HilbertAmplitudeLayer(nn.Module):
         x = torch.abs(x)
         return x
     
+    
 class HilbertSplitLayer(nn.Module):
     def __init__(self):
         super(self.__class__, self).__init__()
@@ -72,4 +73,33 @@ class HilbertSplitLayer(nn.Module):
         x_complex = self.hilbert(x)
         x_real = torch.view_as_real(x_complex)
         x = einops.rearrange(x_real, 'b c t a -> b (c a) t')
+        return x
+
+    
+class TemporalPad(nn.Module):
+    def __init__(self, padding='same', dim='1d', kernel_size=1, padding_mode='zeros', hilbert=False):
+        super().__init__()
+        
+        if padding == 'valid':
+            padding = 0
+        elif padding == 'same':
+            padding = kernel_size // 2
+            
+        if hilbert:
+            self.padding_hilbert = kernel_size // 2
+            padding += self.padding_hilbert
+            
+        if dim == '1d':
+            if padding_mode == 'zeros':
+                self.pad = nn.ConstantPad1d(padding, 0)
+            elif padding_mode == 'reflect':
+                self.pad = nn.ReflectionPad1d(padding)
+        elif dim == '2d':
+            if padding_mode == 'zeros':
+                self.pad = nn.ConstantPad2d((padding, padding, 0, 0), 0)
+            elif padding_mode == 'reflect':
+                self.pad = nn.ReflectionPad2d((padding, padding, 0, 0))
+        
+    def forward(self, x):
+        x = self.pad(x)
         return x

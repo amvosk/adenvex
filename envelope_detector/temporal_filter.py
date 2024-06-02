@@ -4,38 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 # import einops
 
-from .layers import HilbertLayer
+from .layers import HilbertLayer, TemporalPad
 
-
-        
-class TemporalPad(nn.Module):
-    def __init__(self, padding='same', dim='1d', kernel_size=1, padding_mode='zeros', hilbert=False):
-        super().__init__()
-        
-        if padding == 'valid':
-            padding = 0
-        elif padding == 'same':
-            padding = kernel_size // 2
-            
-        if hilbert:
-            self.padding_hilbert = kernel_size // 2
-            padding += self.padding_hilbert
-            
-        if dim == '1d':
-            if padding_mode == 'zeros':
-                self.pad = nn.ConstantPad1d(padding, 0)
-            elif padding_mode == 'reflect':
-                self.pad = nn.ReflectionPad1d(padding)
-        elif dim == '2d':
-            if padding_mode == 'zeros':
-                self.pad = nn.ConstantPad2d((padding, padding, 0, 0), 0)
-            elif padding_mode == 'reflect':
-                self.pad = nn.ReflectionPad2d((padding, padding, 0, 0))
-        
-    def forward(self, x):
-        x = self.pad(x)
-        return x
-    
 
 class TemporalFilter(nn.Module):
     def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, seed=None):
@@ -86,7 +56,7 @@ class TemporalFilter(nn.Module):
             freq = self._freq
             
         if self.bandwidth is None:
-            bandwidth = torch.sigmoid(self.coef_bandwidth) * 0.95 + 0.025
+            bandwidth = 2 * (torch.sigmoid(self.coef_bandwidth) * 0.95 + 0.025)
         else:
             bandwidth = self._bandwidth
         bandwidth = bandwidth * freq
