@@ -7,5 +7,6 @@ from .tools import (
 from .models import EnvelopeDetector
 from .layers import HilbertLayer
 
-from .temporal_filter import SincLayer, SincHilbertLayer, WaveletLayer, ComplexWaveletLayer
+from .temporal_filter import SincLayer1d, SincHilbertLayer1d, WaveletLayer1d, ComplexWaveletLayer1d
+from .temporal_filter import SincLayer2d, SincHilbertLayer2d, WaveletLayer2d, ComplexWaveletLayer2d
 from .downsampler import AvePoolLayer, ResampleLayer
