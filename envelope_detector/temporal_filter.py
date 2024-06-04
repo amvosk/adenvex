@@ -1,3 +1,4 @@
+import copy
 import math
 import torch
 import torch.nn as nn
@@ -8,11 +9,25 @@ from .layers import HilbertLayer, TemporalPad
 
 
 class TemporalFilter(nn.Module):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, seed=None):
+    def __init__(
+        self,
+        n_channels,
+        kernel_size,
+        srate,
+        fmin_init=1,
+        fmax_init=40,
+        freq=None,
+        bandwidth=None,
+        margin_frequency=0.3,
+        margin_bandwidth=0.05,
+        seed=None,
+    ):
         super().__init__()
         self.n_channels = n_channels
         self.kernel_size = kernel_size
         self.srate = srate
+        self.margin_frequency = margin_frequency
+        self.margin_bandwidth = margin_bandwidth
         
         self.register_buffer('_scale', torch.arange(-self.kernel_size//2 + 1, self.kernel_size//2 + 1) / self.srate)
 
@@ -23,14 +38,14 @@ class TemporalFilter(nn.Module):
         
         self.freq = freq
         if self.freq is None:
-            coef_freq = self._create_parameters_freq(self.n_channels, fmin_init, fmax_init)
+            coef_freq = self._create_parameters_freq(self.n_channels, fmin_init, fmax_init, generator)
             self.coef_freq = nn.Parameter(coef_freq)
         else:
             self.register_buffer('_freq', freq)
         
         self.bandwidth = bandwidth
         if self.bandwidth is None:
-            coef_bandwidth = self._create_parameters_bandwidth(self.n_channels)
+            coef_bandwidth = self._create_parameters_bandwidth(self.n_channels, generator)
             self.coef_bandwidth = nn.Parameter(coef_bandwidth)
         else:
             if not isinstance(bandwidth, torch.Tensor):
@@ -40,23 +55,23 @@ class TemporalFilter(nn.Module):
                 bandwidth = bandwidth.repeat(self.n_channels)
             self.register_buffer('_bandwidth', bandwidth)
         
-    def _create_parameters_freq(self, n_coef, fmin_init, fmax_init):
-        coef = fmin_init + torch.rand(size=(n_coef,)) * (fmax_init - fmin_init)
+    def _create_parameters_freq(self, n_coef, fmin_init, fmax_init, generator):
+        coef = fmin_init + torch.rand(size=(n_coef,), generator=generator) * (fmax_init - fmin_init)
         return coef
     
-    def _create_parameters_bandwidth(self, n_coef):
-        coef = torch.rand(size=(n_coef,)) * 0.95 + 0.025
+    def _create_parameters_bandwidth(self, n_coef, generator):
+        coef = torch.rand(size=(n_coef,), generator=generator) * 0.95 + 0.025
         coef = torch.log(coef / (1-coef))
         return coef
     
     def _create_frequencies(self):
         if self.freq is None:
-            freq = 0.2 + F.softplus(self.coef_freq)
+            freq = self.margin_frequency + F.softplus(self.coef_freq)
         else:
             freq = self._freq
-            
+
         if self.bandwidth is None:
-            bandwidth = 2 * (torch.sigmoid(self.coef_bandwidth) * 0.95 + 0.025)
+            bandwidth = 2 * (torch.sigmoid(self.coef_bandwidth) * (1 - 2*self.margin_bandwidth) + self.margin_bandwidth)
         else:
             bandwidth = self._bandwidth
         bandwidth = bandwidth * freq
@@ -70,9 +85,9 @@ class TemporalFilter(nn.Module):
     
     
 class SincLayer1d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='1d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=False)
         self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,-1)))
 
@@ -88,14 +103,15 @@ class SincLayer1d(TemporalFilter):
         x = self.pad(x)
         _, _, freq_low, freq_high = self._create_frequencies()
         filt = self._create_filters(freq_low, freq_high)
-        x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+        assert self.in_channels == x.shape[-2]
+        x = F.conv1d(x, filt, groups=self.in_channels, padding='valid')
         return x
     
                                      
 class SincLayer2d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='2d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=False)         
         self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,1,-1)))
                                      
@@ -111,16 +127,17 @@ class SincLayer2d(TemporalFilter):
         x = self.pad(x)
         _, _, freq_low, freq_high = self._create_frequencies()
         filt = self._create_filters(freq_low, freq_high)
-        x = F.conv2d(x, filt, groups=x.shape[-3], padding='valid')
+        assert self.in_channels == x.shape[-3]
+        x = F.conv2d(x, filt, groups=self.in_channels, padding='valid')
         return x
                                      
     
     
     
 class SincHilbertLayer1d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='1d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=True)   
         self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,-1)))
         self.hilbert = HilbertLayer()
@@ -137,7 +154,8 @@ class SincHilbertLayer1d(TemporalFilter):
         x = self.pad(x)
         _, _, freq_low, freq_high = self._create_frequencies()
         filt = self._create_filters(freq_low, freq_high)
-        x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+        assert self.in_channels == x.shape[-2]
+        x = F.conv1d(x, filt, groups=self.in_channels, padding='valid')
             
         if not return_filtered:
             x = self.hilbert(x)
@@ -147,9 +165,9 @@ class SincHilbertLayer1d(TemporalFilter):
     
     
 class SincHilbertLayer2d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='2d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=True)
         self.register_buffer('_hamming_window', torch.hamming_window(kernel_size).reshape((1,1,-1)))
         self.hilbert = HilbertLayer()
@@ -166,21 +184,22 @@ class SincHilbertLayer2d(TemporalFilter):
         x = self.pad(x)
         _, _, freq_low, freq_high = self._create_frequencies()
         filt = self._create_filters(freq_low, freq_high)
-        x = F.conv2d(x, filt, groups=x.shape[-3], padding='valid')
+        assert self.in_channels == x.shape[-3]
+        x = F.conv2d(x, filt, groups=self.in_channels, padding='valid')
             
         if not return_filtered:
             x = self.hilbert(x)
             x = torch.abs(x)
         x = x[...,self.pad.padding_hilbert:-self.pad.padding_hilbert]
         return x
+
+
     
-
-
     
 class WaveletLayer1d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='2d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=False)     
            
     def _create_filters(self, freq, bandwidth):
@@ -196,14 +215,15 @@ class WaveletLayer1d(TemporalFilter):
         x = self.pad(x)
         freq, bandwidth, _, _ = self._create_frequencies()
         filt = self._create_filters(freq, bandwidth)
-        x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+        assert self.in_channels == x.shape[-2]
+        x = F.conv1d(x, filt, groups=self.in_channels, padding='valid')
         return x
 
     
 class WaveletLayer2d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='2d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=False)     
            
     def _create_filters(self, freq, bandwidth):
@@ -219,15 +239,17 @@ class WaveletLayer2d(TemporalFilter):
         x = self.pad(x)
         freq, bandwidth, _, _ = self._create_frequencies()
         filt = self._create_filters(freq, bandwidth)
-        x = F.conv2d(x, filt, groups=x.shape[-3], padding='valid')
+        assert self.in_channels == x.shape[-3]
+        x = F.conv2d(x, filt, groups=self.in_channels, padding='valid')
         return x
         
         
         
-class ComplexWaveletLayer1d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
         
+class ComplexWaveletLayer1d(TemporalFilter):
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='1d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=False)    
            
     def _create_filters(self, freq, bandwidth):
@@ -243,20 +265,21 @@ class ComplexWaveletLayer1d(TemporalFilter):
         x = self.pad(x)
         freq, bandwidth, _, _ = self._create_frequencies()
         filt = self._create_filters(freq, bandwidth)
+        assert self.in_channels == x.shape[-2]
         
         if return_filtered:
-            x = F.conv1d(x, filt.real, groups=x.shape[-2], padding='valid')
+            x = F.conv1d(x, filt.real, groups=self.in_channels, padding='valid')
         else:
             x = x.to(torch.complex64)
-            x = F.conv1d(x, filt, groups=x.shape[-2], padding='valid')
+            x = F.conv1d(x, filt, groups=self.in_channels, padding='valid')
             x = torch.abs(x)
         return x
     
     
 class ComplexWaveletLayer2d(TemporalFilter):
-    def __init__(self, n_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
-        super().__init__(n_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed)
-        
+    def __init__(self, in_channels, out_channels, kernel_size, srate, fmin_init, fmax_init, freq=None, bandwidth=None, padding_mode='zeros', seed=None):
+        super().__init__(out_channels, kernel_size, srate, fmin_init, fmax_init, freq, bandwidth, seed=seed)
+        self.in_channels = in_channels
         self.pad = TemporalPad(padding='same', dim='2d', kernel_size=kernel_size, padding_mode=padding_mode, hilbert=False)    
            
     def _create_filters(self, freq, bandwidth):
@@ -273,10 +296,11 @@ class ComplexWaveletLayer2d(TemporalFilter):
         freq, bandwidth, _, _ = self._create_frequencies()
         filt = self._create_filters(freq, bandwidth)
         
+        assert self.in_channels == x.shape[-3]
         if return_filtered:
-            x = F.conv2d(x, filt.real, groups=x.shape[-3], padding='valid')
+            x = F.conv2d(x, filt.real, groups=self.in_channels, padding='valid')
         else:
             x = x.to(torch.complex64)
-            x = F.conv2d(x, filt, groups=x.shape[-3], padding='valid')
+            x = F.conv2d(x, filt, groups=self.in_channels, padding='valid')
             x = torch.abs(x)
         return x
