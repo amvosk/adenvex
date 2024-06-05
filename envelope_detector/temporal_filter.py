@@ -33,19 +33,17 @@ class TemporalFilter(nn.Module):
 
         if seed is None:
             seed = int(torch.empty((), dtype=torch.int64).random_().item())
-        generator = torch.Generator()
-        generator.manual_seed(seed)
         
         self.freq = freq
         if self.freq is None:
-            coef_freq = self._create_parameters_freq(self.n_channels, fmin_init, fmax_init, generator)
+            coef_freq = self._create_parameters_freq(self.n_channels, fmin_init, fmax_init, seed)
             self.coef_freq = nn.Parameter(coef_freq)
         else:
             self.register_buffer('_freq', freq)
         
         self.bandwidth = bandwidth
         if self.bandwidth is None:
-            coef_bandwidth = self._create_parameters_bandwidth(self.n_channels, generator)
+            coef_bandwidth = self._create_parameters_bandwidth(self.n_channels, seed)
             self.coef_bandwidth = nn.Parameter(coef_bandwidth)
         else:
             if not isinstance(bandwidth, torch.Tensor):
@@ -55,11 +53,15 @@ class TemporalFilter(nn.Module):
                 bandwidth = bandwidth.repeat(self.n_channels)
             self.register_buffer('_bandwidth', bandwidth)
         
-    def _create_parameters_freq(self, n_coef, fmin_init, fmax_init, generator):
+    def _create_parameters_freq(self, n_coef, fmin_init, fmax_init, seed):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
         coef = fmin_init + torch.rand(size=(n_coef,), generator=generator) * (fmax_init - fmin_init)
         return coef
     
-    def _create_parameters_bandwidth(self, n_coef, generator):
+    def _create_parameters_bandwidth(self, n_coef, seed):
+        generator = torch.Generator()
+        generator.manual_seed(seed+1)
         coef = torch.rand(size=(n_coef,), generator=generator) * 0.95 + 0.025
         coef = torch.log(coef / (1-coef))
         return coef
@@ -71,7 +73,7 @@ class TemporalFilter(nn.Module):
             freq = self._freq
 
         if self.bandwidth is None:
-            bandwidth = 2 * (torch.sigmoid(self.coef_bandwidth) * (1 - 2*self.margin_bandwidth) + self.margin_bandwidth)
+            bandwidth = (torch.sigmoid(self.coef_bandwidth) * (1 - 2*self.margin_bandwidth) + self.margin_bandwidth)
         else:
             bandwidth = self._bandwidth
         bandwidth = bandwidth * freq
